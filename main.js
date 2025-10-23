@@ -15,29 +15,33 @@ let pendingSubmissions = []; // Track background submissions
 
 const room = new WebsimSocket();
 
-async function fetchAllScores(collection, lastCreatedAt = null, fetchedScores = []) {
-    // The Websim API returns records sorted newest to oldest.
-    // By fetching records older than the last one we received, we can paginate through all of them.
+async function processLeaderboardScores(collection, allScores = new Map(), lastCreatedAt = null) {
     let query = collection;
     if (lastCreatedAt) {
+        // This filter is likely not supported as per docs, but we keep it
+        // just in case it's an undocumented feature for pagination.
+        // The main logic now relies on client-side deduplication.
         query = query.filter({ older_than_created_at: lastCreatedAt });
     }
 
-    const newScores = await query.get(); // Using .get() for a one-time fetch
+    const newScores = await query.get();
 
-    if (newScores.length === 0) {
-        return fetchedScores;
+    let madeProgress = false;
+    newScores.forEach(score => {
+        if (!allScores.has(score.id)) {
+            allScores.set(score.id, score);
+            madeProgress = true;
+        }
+    });
+
+    // If new scores were added and we received a full batch, try to fetch more.
+    if (madeProgress && newScores.length >= 1000) {
+        const oldestRecord = newScores[newScores.length - 1];
+        return processLeaderboardScores(collection, allScores, oldestRecord.created_at);
     }
-
-    const combinedScores = fetchedScores.concat(newScores);
-    const oldestRecord = newScores[newScores.length - 1];
     
-    // The default limit is 1000, if we receive less, we're at the end.
-    if (newScores.length < 1000) {
-        return combinedScores;
-    }
-
-    return fetchAllScores(collection, oldestRecord.created_at, combinedScores);
+    // Convert map values to an array for the UI
+    return Array.from(allScores.values());
 }
 
 function init() {
@@ -108,7 +112,7 @@ function init() {
     };
     
     // Initial fetch of all scores
-    fetchAllScores(scoreCollection).then(allScores => {
+    processLeaderboardScores(scoreCollection).then(allScores => {
         updateLeaderboardUI(allScores);
         
         // After the initial load, subscribe to new scores to keep the leaderboard live
